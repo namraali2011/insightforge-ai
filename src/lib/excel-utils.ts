@@ -1,5 +1,6 @@
 
 import type { DataRow, Dataset } from "@/types/dataset";
+
 import {
   MAX_FILE_SIZE,
   MAX_ROWS,
@@ -11,21 +12,25 @@ const MAX_COLUMNS = 100;
 export async function parseExcelFile(
   file: File
 ): Promise<Dataset> {
+  // Validate extension
   if (!file.name.toLowerCase().endsWith(".xlsx")) {
-    throw new Error("Please select an .xlsx Excel file.");
+    throw new Error(
+      "Please select a valid .xlsx Excel file."
+    );
   }
 
+  // Validate file size
   if (file.size === 0) {
-    throw new Error("The Excel file is empty.");
+    throw new Error("The selected Excel file is empty.");
   }
 
   if (file.size > MAX_FILE_SIZE) {
     throw new Error(
-      "Excel file exceeds the 5 MB limit."
+      "Excel file exceeds the 5 MB size limit."
     );
   }
 
-  // Load ExcelJS only when an Excel file is selected.
+  // Import ExcelJS only when an Excel file is uploaded.
   const ExcelJS = (await import("exceljs")).default;
 
   const workbook = new ExcelJS.Workbook();
@@ -33,8 +38,17 @@ export async function parseExcelFile(
   const arrayBuffer = await file.arrayBuffer();
 
   try {
+    // ExcelJS declares its own Buffer type.
+    // Use its load parameter type to resolve the
+    // TypeScript mismatch across library versions.
+    //
+    // This is a type-only conversion.
+    // The original ArrayBuffer is unchanged.
+    type ExcelLoadInput =
+      Parameters<typeof workbook.xlsx.load>[0];
+
     await workbook.xlsx.load(
-      arrayBuffer as unknown as Buffer
+      arrayBuffer as unknown as ExcelLoadInput
     );
   } catch {
     throw new Error(
@@ -42,7 +56,7 @@ export async function parseExcelFile(
     );
   }
 
-  // Select the first worksheet with actual table rows.
+  // Choose the first worksheet containing data.
   const sheet = workbook.worksheets.find(
     (worksheet) => worksheet.actualRowCount >= 2
   );
@@ -53,7 +67,7 @@ export async function parseExcelFile(
     );
   }
 
-  // Stage 3.5 expects headers in the first row.
+  // The first row contains column names.
   const headerRow = sheet.getRow(1);
 
   const columnCount = headerRow.cellCount;
@@ -72,7 +86,11 @@ export async function parseExcelFile(
 
   const fields: string[] = [];
 
-  for (let column = 1; column <= columnCount; column++) {
+  for (
+    let column = 1;
+    column <= columnCount;
+    column++
+  ) {
     const header = headerRow
       .getCell(column)
       .text.trim();
@@ -86,6 +104,7 @@ export async function parseExcelFile(
     fields.push(header);
   }
 
+  // Check for duplicate headers.
   if (new Set(fields).size !== fields.length) {
     throw new Error(
       "Duplicate column names found in Excel."
@@ -94,6 +113,7 @@ export async function parseExcelFile(
 
   const warnings: string[] = [];
 
+  // Convert Excel cell values into strings.
   function cellToString(
     cell: ReturnType<typeof headerRow.getCell>
   ): string {
@@ -103,6 +123,7 @@ export async function parseExcelFile(
       return "";
     }
 
+    // Normalize Excel date cells.
     if (value instanceof Date) {
       return value.toISOString().slice(0, 10);
     }
@@ -115,8 +136,8 @@ export async function parseExcelFile(
       return String(value);
     }
 
-    // Excel formulas are not calculated by ExcelJS.
-    // Only use a result already cached in the file.
+    // Formula cells may contain cached results.
+    // ExcelJS does not evaluate formulas.
     if (
       typeof value === "object" &&
       ("formula" in value ||
@@ -139,8 +160,7 @@ export async function parseExcelFile(
       return "";
     }
 
-    // Handle rich text and hyperlinks through
-    // ExcelJS's display-text representation.
+    // Rich text, hyperlinks, and display values.
     return cell.text.trim();
   }
 
@@ -148,9 +168,11 @@ export async function parseExcelFile(
 
   let missingFormulaResults = 0;
 
+  // Read worksheet rows.
   sheet.eachRow(
     { includeEmpty: false },
     (row, rowNumber) => {
+      // Skip header row.
       if (rowNumber === 1) return;
 
       if (rows.length >= MAX_ROWS) {
@@ -165,6 +187,7 @@ export async function parseExcelFile(
         const cell = row.getCell(index + 1);
         const value = cell.value;
 
+        // Detect formulas without cached results.
         if (
           value !== null &&
           typeof value === "object" &&
@@ -179,6 +202,7 @@ export async function parseExcelFile(
         data[field] = cellToString(cell);
       });
 
+      // Skip completely empty records.
       const hasValues = Object.values(data).some(
         (value) => value.trim() !== ""
       );
@@ -195,8 +219,10 @@ export async function parseExcelFile(
     );
   }
 
+  // Apply the existing CSV column profiler.
   const columns = profileColumns(rows, fields);
 
+  // Data quality warnings.
   if (missingFormulaResults > 0) {
     warnings.push(
       `${missingFormulaResults} formula cells did not contain cached results and were treated as empty.`
@@ -229,6 +255,7 @@ export async function parseExcelFile(
     );
   }
 
+  // Return the shared Dataset structure.
   return {
     id: crypto.randomUUID(),
     name: `${file.name} — ${sheet.name}`,
