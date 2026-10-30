@@ -177,7 +177,7 @@ export default function UploadPage() {
 
     setError("");
     setLocalDataset(null);
-    clearStoredDataset();
+    // Retain the current dataset until its replacement parses successfully.
 
     const extension = file.name
       .split(".")
@@ -285,7 +285,7 @@ export default function UploadPage() {
         </h1>
 
         <p className="mt-2 text-sm text-slate-500">
-          Upload CSV or Excel data, inspect its
+          One active dataset is kept in memory. A successful upload replaces it; refreshing clears it. Upload CSV or Excel data, inspect its
           structure, and generate an interactive
           dashboard.
         </p>

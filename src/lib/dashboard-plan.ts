@@ -1,175 +1,213 @@
-
 import { z } from "zod";
 import type { Dataset } from "@/types/dataset";
-
 import {
   getCategoryColumns,
   getDateColumns,
   getDefaultMeasure,
-  getNumericColumns,
 } from "@/lib/analytics";
+
+export const OperationSchema = z.enum([
+  "sum",
+  "average",
+  "count",
+  "distinctCount",
+]);
 
 export const MetricSchema = z.object({
   id: z.string(),
-  title: z.string(),
+  title: z.string().min(1).max(100),
   field: z.string(),
-  aggregation: z.enum(["sum", "average", "count"]),
+  aggregation: OperationSchema,
 });
 
 export const ChartSchema = z.object({
   id: z.string(),
-  title: z.string(),
-  type: z.enum(["bar", "line", "area", "donut"]),
+  title: z.string().min(1).max(100),
+
+  type: z.enum([
+    "bar",
+    "column",
+    "line",
+    "area",
+    "donut",
+    "scatter",
+    "stacked",
+  ]),
+
   dimension: z.string(),
   measure: z.string(),
-  aggregation: z.enum(["sum", "average", "count"]),
-  emphasis: z.string(),
+  aggregation: OperationSchema,
+
+  series: z.string().default(""),
+  requestId: z.string().default(""),
+  emphasis: z.string().max(300),
 });
 
 export const DashboardPlanSchema = z.object({
-  title: z.string(),
-  description: z.string(),
+  title: z.string().min(1).max(100),
+  description: z.string().max(600),
+
   metrics: z.array(MetricSchema).max(4),
-  charts: z.array(ChartSchema).max(6),
+  charts: z.array(ChartSchema),
   filters: z.array(z.string()).max(3),
+
+  warnings: z.array(z.string()).default([]),
 });
 
-export type DashboardPlan = z.infer<
-  typeof DashboardPlanSchema
->;
+export type DashboardPlan = z.infer<typeof DashboardPlanSchema>;
+export type ChartConfig = DashboardPlan["charts"][number];
+export type Operation = z.infer<typeof OperationSchema>;
+
+export function metricValid(
+  metric: DashboardPlan["metrics"][number],
+  dataset: Dataset
+) {
+  const column = dataset.columns.find(
+    (item) => item.name === metric.field
+  );
+
+  return (
+    !!column &&
+    (
+      ["count", "distinctCount"].includes(metric.aggregation) ||
+      column.type === "number"
+    )
+  );
+}
+
+export function chartValid(
+  chart: ChartConfig,
+  dataset: Dataset
+) {
+  const dimension = dataset.columns.find(
+    (column) => column.name === chart.dimension
+  );
+
+  const measure = dataset.columns.find(
+    (column) => column.name === chart.measure
+  );
+
+  if (!dimension || dimension.type === "empty" || !measure) {
+    return false;
+  }
+
+  if (chart.type === "scatter") {
+    return (
+      dimension.type === "number" &&
+      measure.type === "number"
+    );
+  }
+
+  if (
+    !["count", "distinctCount"].includes(chart.aggregation) &&
+    measure.type !== "number"
+  ) {
+    return false;
+  }
+
+  if (
+    chart.type === "donut" &&
+    !["text", "boolean"].includes(dimension.type)
+  ) {
+    return false;
+  }
+
+  if (chart.type === "stacked") {
+    const series = dataset.columns.find(
+      (column) => column.name === chart.series
+    );
+
+    if (
+      !series ||
+      series.type === "empty" ||
+      chart.series === chart.dimension ||
+      series.uniqueCount > 12
+    ) {
+      return false;
+    }
+
+    // Stacking averages or distinct counts can imply
+    // misleading additive totals.
+    if (!["sum", "count"].includes(chart.aggregation)) {
+      return false;
+    }
+  }
+
+  return true;
+}
 
 export function validateDashboardPlan(
   plan: DashboardPlan,
   dataset: Dataset
 ): DashboardPlan {
-  const columns = new Set(
-    dataset.columns.map((c) => c.name)
-  );
-
-  const numeric = new Set(
-    getNumericColumns(dataset).map((c) => c.name)
-  );
-
-  const dimensions = new Set(
-    dataset.columns
-      .filter((c) => c.type !== "empty")
-      .map((c) => c.name)
-  );
-
-  const categories = new Set(
-    getCategoryColumns(dataset).map((c) => c.name)
-  );
-
   return {
-    title: plan.title.slice(0, 100),
-    description: plan.description.slice(0, 300),
+    ...plan,
 
-    metrics: plan.metrics
-      .filter(
-        (metric) =>
-          columns.has(metric.field) &&
-          (metric.aggregation === "count" ||
-            numeric.has(metric.field))
-      )
-      .slice(0, 4),
+    metrics: plan.metrics.filter((metric) =>
+      metricValid(metric, dataset)
+    ),
 
-    charts: plan.charts
-      .filter(
-        (chart) =>
-          dimensions.has(chart.dimension) &&
-          columns.has(chart.measure) &&
-          (chart.aggregation === "count" ||
-            numeric.has(chart.measure)) &&
-          (
-            chart.type !== "donut" ||
-            categories.has(chart.dimension)
-          )
-      )
-      .slice(0, 6),
+    charts: plan.charts.filter((chart) =>
+      chartValid(chart, dataset)
+    ),
 
-    filters: [...new Set(
-      plan.filters.filter((field) =>
-        categories.has(field)
+    filters: [...new Set(plan.filters)].filter((field) =>
+      getCategoryColumns(dataset).some(
+        (column) => column.name === field
       )
-    )].slice(0, 3),
+    ),
   };
 }
 
 export function createFallbackPlan(
   dataset: Dataset
 ): DashboardPlan {
-  const numeric = getNumericColumns(dataset);
-  const categories = getCategoryColumns(dataset);
-  const dates = getDateColumns(dataset);
+  const measure = getDefaultMeasure(dataset.columns);
+  const category = getCategoryColumns(dataset)[0]?.name;
+  const date = getDateColumns(dataset)[0]?.name;
 
-  const measure =
-    getDefaultMeasure(dataset.columns) ??
-    numeric[0]?.name ??
-    "";
+  const charts: ChartConfig[] = [];
 
-  const metrics: DashboardPlan["metrics"] = [];
-
-  if (measure) {
-    metrics.push(
-      {
-        id: "total",
-        title: `Total ${measure}`,
-        field: measure,
-        aggregation: "sum",
-      },
-      {
-        id: "average",
-        title: `Average ${measure}`,
-        field: measure,
-        aggregation: "average",
-      }
-    );
-  }
-
-  const charts: DashboardPlan["charts"] = [];
-
-  if (measure && dates[0]) {
+  if (measure && (date || category)) {
     charts.push({
-      id: "trend",
-      title: `${measure} over time`,
-      type: "area",
-      dimension: dates[0].name,
+      id: "overview",
+      title: `${measure} by ${date || category}`,
+      type: date ? "line" : "bar",
+      dimension: (date || category)!,
       measure,
       aggregation: "sum",
-      emphasis: "Monthly performance trend",
-    });
-  }
-
-  if (measure && categories[0]) {
-    charts.push({
-      id: "category-bar",
-      title: `${measure} by ${categories[0].name}`,
-      type: "bar",
-      dimension: categories[0].name,
-      measure,
-      aggregation: "sum",
-      emphasis: "Compare category performance",
-    });
-  }
-
-  if (measure && categories[1]) {
-    charts.push({
-      id: "category-donut",
-      title: `${measure} share by ${categories[1].name}`,
-      type: "donut",
-      dimension: categories[1].name,
-      measure,
-      aggregation: "sum",
-      emphasis: "Show category contribution",
+      emphasis: "Dataset overview",
+      series: "",
+      requestId: "",
     });
   }
 
   return {
     title: "Dataset Overview",
-    description:
-      "Interactive dashboard generated from your uploaded dataset.",
-    metrics,
+    description: "Local rule-based dashboard.",
+    warnings: [],
+
+    metrics: measure
+      ? [
+          {
+            id: "total",
+            title: `Total ${measure}`,
+            field: measure,
+            aggregation: "sum",
+          },
+          {
+            id: "average",
+            title: `Average ${measure}`,
+            field: measure,
+            aggregation: "average",
+          },
+        ]
+      : [],
+
     charts,
-    filters: categories.slice(0, 3).map((c) => c.name),
+
+    filters: getCategoryColumns(dataset)
+      .slice(0, 3)
+      .map((column) => column.name),
   };
 }

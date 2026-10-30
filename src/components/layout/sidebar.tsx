@@ -94,7 +94,7 @@ export default function Sidebar() {
       </button>
 
       {/* Desktop sidebar */}
-      <aside className="hidden w-64 shrink-0 flex-col border-r border-slate-200 bg-white p-5 md:flex">
+      <aside className="if-sidebar hidden w-64 shrink-0 flex-col border-r border-slate-200 bg-white p-5 md:flex">
         {navContent}
       </aside>
 

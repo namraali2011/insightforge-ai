@@ -1,6 +1,8 @@
 
 import { create } from "zustand";
 import type { DashboardPlan } from "@/lib/dashboard-plan";
+import { createFallbackPlan, ChartSchema, validateDashboardPlan } from "@/lib/dashboard-plan";
+import type { Dataset } from "@/types/dataset";
 
 type PlanSource = "gemini" | "rules";
 
@@ -17,6 +19,7 @@ interface DashboardPlanStore {
   ) => void;
 
   updatePlan: (plan: DashboardPlan) => void;
+  appendChart: (dataset: Dataset, chart: unknown) => boolean;
   resetPlan: () => void;
   clearPlan: () => void;
 }
@@ -47,6 +50,22 @@ export const useDashboardPlanStore =
       set({
         plan: clonePlan(plan),
       });
+    },
+
+    appendChart: (dataset, input) => {
+      const result = ChartSchema.safeParse(input);
+      if (!result.success) return false;
+      const state = get();
+      const sameDataset = state.datasetId === dataset.id && state.plan !== null;
+      const base = sameDataset ? state.plan! : createFallbackPlan(dataset);
+      const chart = { ...result.data, id: crypto.randomUUID() };
+      if (validateDashboardPlan({ ...base, charts: [chart] }, dataset).charts.length !== 1) return false;
+      set({ datasetId: dataset.id,
+        plan: clonePlan({ ...base, charts: [...base.charts, chart] }),
+        originalPlan: sameDataset ? state.originalPlan : clonePlan(base),
+        source: sameDataset ? state.source : "rules",
+      });
+      return true;
     },
 
     resetPlan: () => {

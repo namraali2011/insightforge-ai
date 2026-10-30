@@ -1,4 +1,5 @@
 
+import { useDashboardPlanStore } from "@/store/useDashboardPlanStore";
 import { create } from "zustand";
 import type { Dataset } from "@/types/dataset";
 
@@ -13,10 +14,12 @@ export const useDatasetStore = create<DatasetStore>()(
     dataset: null,
 
     setDataset: (dataset) => {
+      useDashboardPlanStore.getState().clearPlan();
       set({ dataset });
     },
 
     clearDataset: () => {
+      useDashboardPlanStore.getState().clearPlan();
       set({ dataset: null });
     },
   })
